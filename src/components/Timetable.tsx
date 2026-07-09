@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from "react";
-import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
+import React, { useState, useEffect, useCallback } from "react";
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors } from "@/constants/colors";
-import * as SQLite from "expo-sqlite";
+import { useSQLiteContext } from "expo-sqlite";
+import { useFocusEffect } from "expo-router";
 
-const WEEKDAYS = ["月", "火", "水", "木", "金"];
-const PERIODS = [1, 2, 3, 4, 5];
+const ALL_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];
 
 interface TimetableProps {
   /**
@@ -14,19 +14,38 @@ interface TimetableProps {
   isEditMode?: boolean;
 
   /**
+   * 授業選択モードかどうか
+   */
+  isSelectMode?: boolean;
+
+  /**
    * 追加ボタンが押されたときのコールバック
    * @param day 曜日（例："月"）
    * @param period 時限（例：1）
+   * @param previousCourseName 直前の時限にある授業名（あれば）
    */
-  onAddCourse?: (day: string, period: number) => void;
+  onAddCourse?: (day: string, period: number, previousCourseName?: string) => void;
+  
+  /**
+   * 授業が選択されたときのコールバック
+   */
+  onSelectClass?: (course: any) => void;
   
   refreshKey?: number;
 }
 
-export default function Timetable({ isEditMode = false, refreshKey = 0, onAddCourse }: TimetableProps) {
+export default function Timetable({ isEditMode = false, isSelectMode = false, refreshKey = 0, onAddCourse, onSelectClass }: TimetableProps) {
+  const db = useSQLiteContext();
   const [courses, setCourses] = useState<any[]>([]);
-  const [isHighlightCurrent, setIsHighlightCurrent] = useState(false);
+  const [isHighlightCurrent, setIsHighlightCurrent] = useState(true);
   const [periodTimes, setPeriodTimes] = useState<any[]>([]);
+
+  // 設定から取得した曜日・時限数
+  const [displayDays, setDisplayDays] = useState(5);
+  const [displayPeriods, setDisplayPeriods] = useState(5);
+
+  const WEEKDAYS = ALL_WEEKDAYS.slice(0, displayDays);
+  const PERIODS = Array.from({ length: displayPeriods }, (_, i) => i + 1);
 
   // 現在の時限を計算する関数（DBの設定値を参照）
   const getCurrentPeriod = () => {
@@ -55,17 +74,25 @@ export default function Timetable({ isEditMode = false, refreshKey = 0, onAddCou
   const currentDay = new Date().getDay() - 1; // 0:月, 1:火, ... 4:金
   const currentPeriod = getCurrentPeriod();
 
-  useEffect(() => {
-    let isActive = true;
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
 
     const fetchCourses = async () => {
       try {
-        const db = await SQLite.openDatabaseAsync("app.db");
-        
         // 授業時間の取得を追加
-        const times: any[] = await db.getAllAsync("SELECT * FROM period_times ORDER BY period ASC");
+        const times: any[] = await db.getAllAsync("SELECT * FROM period_times ORDER BY period ASC", []);
         if (isActive) {
           setPeriodTimes(times);
+        }
+
+        // 設定値の取得
+        const settings: any[] = await db.getAllAsync("SELECT * FROM app_settings", []);
+        if (isActive) {
+          for (const s of settings) {
+            if (s.key === 'timetable_days') setDisplayDays(Number(s.value));
+            if (s.key === 'timetable_periods') setDisplayPeriods(Number(s.value));
+          }
         }
 
         const currentTerm: any = await db.getFirstAsync("SELECT id FROM terms WHERE is_current = 1");
@@ -75,8 +102,8 @@ export default function Timetable({ isEditMode = false, refreshKey = 0, onAddCou
           return;
         }
 
+        // 現在の学期に紐づく授業のみ取得
         const classList: any[] = await db.getAllAsync("SELECT * FROM classes WHERE term_id = ?", [currentTerm.id]);
-        // console.log("Fetched courses:", classList); // デバッグ用
         if (isActive) {
           setCourses(classList);
         }
@@ -90,7 +117,7 @@ export default function Timetable({ isEditMode = false, refreshKey = 0, onAddCou
     return () => {
       isActive = false;
     };
-  }, [refreshKey]);
+  }, [refreshKey]));
 
   return (
     <View style={styles.container}>
@@ -124,33 +151,56 @@ export default function Timetable({ isEditMode = false, refreshKey = 0, onAddCou
       </View>
 
       {/* テーブルのボディ（時限ごとの行） */}
-      {PERIODS.map((period, rowIndex) => (
+      <ScrollView style={{ flex: 1 }} nestedScrollEnabled={true}>
+        {PERIODS.map((period, rowIndex) => (
         <View key={rowIndex} style={styles.row}>
           {/* 左側の時限セル */}
           <View style={styles.periodCell}>
             <Text style={styles.periodText}>{period}</Text>
           </View>
-          {/* 各曜日の枠（授業セル） */}
           {WEEKDAYS.map((day, colIndex) => {
-            // == にして文字列/数値の型違いによる不一致を防ぐ
             const course = courses.find((c) => c.day_of_week == colIndex && c.period == period);
             const hasCourse = !!course;
             const isCurrent = isHighlightCurrent && colIndex === currentDay && period === currentPeriod;
 
+            // 前後の授業と同じかどうかの判定（名前で判定）
+            let isContinuingFromPrev = false;
+            let isContinuingToNext = false;
+            if (hasCourse) {
+              isContinuingFromPrev = !!courses.find((c) => c.day_of_week == colIndex && c.period == period - 1 && c.name === course.name);
+              isContinuingToNext = !!courses.find((c) => c.day_of_week == colIndex && c.period == period + 1 && c.name === course.name);
+            }
+
             return (
               <View key={colIndex} style={[styles.courseCell, isCurrent && styles.currentCourseCell]}>
                 {hasCourse ? (
-                  <View style={[styles.courseContent, isCurrent && styles.currentCourseContent]}>
-                    <Text style={styles.courseNameText} numberOfLines={4}>
-                      {course.name}
+                  <TouchableOpacity 
+                    style={[
+                      styles.courseContent, 
+                      isCurrent && styles.currentCourseContent,
+                      isContinuingFromPrev && styles.courseContentContinued,
+                      isContinuingToNext && styles.courseContentContinuing,
+                    ]}
+                    disabled={!(isSelectMode || isEditMode)}
+                    onPress={() => {
+                      if ((isSelectMode || isEditMode) && onSelectClass) {
+                        onSelectClass(course);
+                      }
+                    }}
+                  >
+                    <Text style={styles.courseNameText} numberOfLines={isContinuingFromPrev ? 2 : 4}>
+                      {!isContinuingFromPrev ? course.name : "〃"}
                     </Text>
-                  </View>
+                  </TouchableOpacity>
                 ) : (
                   // 授業が未登録 かつ 編集モードの場合のみ追加ボタンを表示
                   isEditMode && (
                     <TouchableOpacity
                       style={styles.addButton}
-                      onPress={() => onAddCourse?.(day, period)}
+                      onPress={() => {
+                        const prevCourse = courses.find((c) => c.day_of_week == colIndex && c.period == period - 1);
+                        onAddCourse?.(day, period, prevCourse?.name);
+                      }}
                     >
                       <Ionicons name="add" size={20} color={Colors.text.secondary} />
                     </TouchableOpacity>
@@ -161,6 +211,7 @@ export default function Timetable({ isEditMode = false, refreshKey = 0, onAddCou
           })}
         </View>
       ))}
+      </ScrollView>
     </View>
   );
 }
@@ -172,6 +223,7 @@ const styles = StyleSheet.create({
     padding: 12,
     // 枠線を少し丸める場合は overflow hidden をつけると綺麗に収まります
     overflow: "hidden",
+    flex: 1, // スクロール領域を確保するために追加
   },
   // --- 行のスタイル ---
   headerRow: {
@@ -246,6 +298,19 @@ const styles = StyleSheet.create({
   currentCourseContent: {
     backgroundColor: Colors.purple.dark, // 強調時は一番濃い紫にする
     borderColor: Colors.yellow.dark, // 強調時は枠線の色も変える
+  },
+  // --- 連続する授業の見た目 ---
+  courseContentContinuing: {
+    marginBottom: 0,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+  },
+  courseContentContinued: {
+    marginTop: 0,
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.3)', // 微かな区切り線
   },
   currentCourseCell: {
     backgroundColor: "rgba(76, 77, 220, 0.1)", // 現在の授業マスの背景を薄い紫色に

@@ -69,6 +69,11 @@ interface MonthCalendarProps {
   taskCounts?: Record<number, number>;
 
   /**
+   * 現在選択されている日付
+   */
+  selectedDate?: Date;
+
+  /**
    * 表示月が変わったときのコールバック
    * 【後で差し替えポイント】
    * 親側でこの月に対応するタスクデータを取得して taskCounts を更新する際に使う
@@ -86,6 +91,7 @@ interface MonthCalendarProps {
 // ---------------------------------------------------------
 export default function MonthCalendar({
   taskCounts = {},
+  selectedDate,
   onMonthChange,
   onDateSelect,
 }: MonthCalendarProps) {
@@ -195,6 +201,12 @@ export default function MonthCalendar({
             const count = day !== null ? (taskCounts[day] ?? 0) : 0;
             // 今月表示中かつ今日の日付のみハイライト
             const isToday = isCurrentMonth && day === todayDate;
+            const isSelected = selectedDate ? (
+              currentYear === selectedDate.getFullYear() &&
+              currentMonth === selectedDate.getMonth() &&
+              day === selectedDate.getDate()
+            ) : false;
+            
             return (
               <View key={dayIndex} style={styles.dateCell}>
                 {day !== null && (
@@ -205,18 +217,21 @@ export default function MonthCalendar({
                       onDateSelect?.(new Date(currentYear, currentMonth, day));
                     }}
                   >
-                    {/* 日にち数字 */}
-                    <Text
-                      style={[
-                        styles.dateText,
-                        isToday && styles.todayText,
-                      ]}
-                    >
-                      {day}
-                    </Text>
+                    {/* 日にち数字の背景用のコンテナ */}
+                    <View style={[styles.dateNumberContainer, isSelected && styles.selectedCell]}>
+                      <Text
+                        style={[
+                          styles.dateText,
+                          isToday && !isSelected && styles.todayText,
+                          isSelected && styles.selectedText
+                        ]}
+                      >
+                        {day}
+                      </Text>
+                    </View>
 
                     {/* タスク件数バッジ（件数 > 0 の場合のみ表示） */}
-                    {count > 0 && (
+                    {count > 0 ? (
                       <View
                         style={[
                           styles.badge,
@@ -225,6 +240,8 @@ export default function MonthCalendar({
                       >
                         <Text style={[styles.badgeText, { color: getBadgeTextColor(count) }]}>{count}</Text>
                       </View>
+                    ) : (
+                      <View style={styles.badgePlaceholder} />
                     )}
                   </TouchableOpacity>
                 )}
@@ -280,14 +297,26 @@ const styles = StyleSheet.create({
   },
   dateCell: {
     flex: 1,
-    minHeight: 52,
-  },
-  dateCellInner: {
-    flex: 1,
     alignItems: "center",
     justifyContent: "flex-start",
+    minHeight: 56, // 行の高さ確保
     paddingTop: 4,
+  },
+  dateCellInner: {
+    alignItems: "center",
+    justifyContent: "flex-start",
     width: "100%",
+  },
+  dateNumberContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    overflow: "hidden", // 追加: はみ出さないようにして確実に丸にする
+  },
+  selectedCell: {
+    backgroundColor: Colors.purple.primary,
   },
   weekdayLabel: {
     fontSize: 14,
@@ -306,18 +335,26 @@ const styles = StyleSheet.create({
     color: Colors.text.primary,
   },
   todayText: {
-    color: Colors.calendar.sunday,
-    fontWeight: "800",
+    color: Colors.purple.primary,
+    fontWeight: "700",
+  },
+  selectedText: {
+    color: Colors.background.white,
+    fontWeight: "700",
   },
   // --- タスク件数バッジ ---
   badge: {
-    marginTop: 4,
-    minWidth: 22,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    marginTop: 2,
+    minWidth: 20,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
     borderRadius: 6,
     alignItems: "center",
     justifyContent: "center",
+  },
+  badgePlaceholder: {
+    marginTop: 2,
+    height: 16,
   },
   badgeText: {
     fontSize: 11,

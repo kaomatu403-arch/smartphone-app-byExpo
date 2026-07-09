@@ -1,18 +1,11 @@
 import * as SQLite from "expo-sqlite";
 
-// データベース接続を取得するヘルパー関数
-export async function getDbConnection() {
-  // SQLiteデータベースを開く（存在しない場合は作成される）
-  return await SQLite.openDatabaseAsync("app.db");
-}
-
 /**
  * データベースを初期化し、必要なテーブルを作成する関数
- * アプリの起動時に必ず1度だけ呼び出す
+ * SQLiteProviderのonInitコールバックから呼び出される
  */
-export async function initDatabase() {
+export async function initDatabase(db: SQLite.SQLiteDatabase) {
   try {
-    const db = await getDbConnection();
 
     // ⚠️ 外部キー制約を有効化（必須）
     await db.execAsync("PRAGMA foreign_keys = ON;");
@@ -51,9 +44,25 @@ export async function initDatabase() {
       await db.execAsync(`
         CREATE TABLE IF NOT EXISTS task_locations (
             id   INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT    NOT NULL UNIQUE
+            name TEXT    NOT NULL UNIQUE,
+            url  TEXT,
+            color TEXT
         );
       `);
+
+      // task_locations に url カラムがない場合は追加する（マイグレーション用）
+      try {
+        await db.execAsync("ALTER TABLE task_locations ADD COLUMN url TEXT;");
+      } catch (e) {
+        // すでにカラムが存在する場合のエラーは無視する
+      }
+
+      // task_locations に color カラムがない場合は追加する（マイグレーション用）
+      try {
+        await db.execAsync("ALTER TABLE task_locations ADD COLUMN color TEXT;");
+      } catch (e) {
+        // すでにカラムが存在する場合のエラーは無視する
+      }
 
       // ④ tasks テーブル（タスク）
       await db.execAsync(`
@@ -75,7 +84,18 @@ export async function initDatabase() {
         );
       `);
 
-      // ⑤ task_reminders テーブル（通知管理用）
+      // ⑤ task_attachments テーブル（添付ファイル）
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS task_attachments (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id    INTEGER NOT NULL,
+            file_uri   TEXT    NOT NULL,
+            file_type  TEXT    NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+      `);
+
+      // ⑥ task_reminders テーブル（通知管理用）
       await db.execAsync(`
         CREATE TABLE IF NOT EXISTS task_reminders (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,7 +108,7 @@ export async function initDatabase() {
         );
       `);
 
-      // ⑥ period_times テーブル（授業時間設定）
+      // ⑦ period_times テーブル（授業時間設定）
       await db.execAsync(`
         CREATE TABLE IF NOT EXISTS period_times (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +116,21 @@ export async function initDatabase() {
             start_time TEXT    NOT NULL,
             end_time   TEXT    NOT NULL
         );
+      `);
+
+      // ⑧ app_settings テーブル（アプリの各種設定用）
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+      `);
+
+      // app_settings テーブルにデフォルトデータを挿入
+      await db.execAsync(`
+        INSERT OR IGNORE INTO app_settings (key, value) VALUES
+          ('timetable_days', '5'), -- デフォルト: 5日 (月〜金)
+          ('timetable_periods', '5'); -- デフォルト: 5時限
       `);
 
       // period_times テーブルにデフォルトデータを挿入
@@ -108,6 +143,15 @@ export async function initDatabase() {
           (5, '16:20', '17:50');
       `);
 
+      // task_locations テーブルにデフォルトデータを挿入
+      await db.execAsync(`
+        INSERT OR IGNORE INTO task_locations (name) VALUES
+          ('Moodle'),
+          ('Teams'),
+          ('対面'),
+          ('その他');
+      `);
+
       // インデックス作成
       await db.execAsync(`
         CREATE INDEX IF NOT EXISTS idx_classes_term_id    ON classes(term_id);
@@ -115,6 +159,7 @@ export async function initDatabase() {
         CREATE INDEX IF NOT EXISTS idx_tasks_due_date     ON tasks(due_date);
         CREATE INDEX IF NOT EXISTS idx_tasks_is_completed ON tasks(is_completed);
         CREATE INDEX IF NOT EXISTS idx_reminders_task_id  ON task_reminders(task_id);
+        CREATE INDEX IF NOT EXISTS idx_attachments_task_id ON task_attachments(task_id);
       `);
     });
 

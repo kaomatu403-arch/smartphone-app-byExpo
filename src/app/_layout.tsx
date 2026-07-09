@@ -1,7 +1,11 @@
+import "react-native-gesture-handler";
 import { useEffect, useState } from "react";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { initDatabase } from "../database/init";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
+import { SQLiteProvider } from "expo-sqlite";
 
 // 準備ができるまでスプラッシュ画面を隠さない
 SplashScreen.preventAutoHideAsync();
@@ -12,10 +16,11 @@ export default function RootLayout() {
   useEffect(() => {
     async function setupApp() {
       try {
-        // アプリ起動時のデータベース初期化（テーブル作成等）
-        await initDatabase();
+        // アプリ起動時の準備処理（SQLiteProviderが初期化を行うためDB処理は不要）
+        // 念のため少しだけ遅延を入れてからスプラッシュを隠す
+        await new Promise(resolve => setTimeout(resolve, 100));
       } catch (e) {
-        console.error("データベースの初期化に失敗しました", e);
+        console.error("アプリ起動準備中にエラーが発生しました", e);
       } finally {
         setIsReady(true);
         // 初期化が終わったらスプラッシュ画面を消す
@@ -31,5 +36,13 @@ export default function RootLayout() {
     return null;
   }
 
-  return <Stack screenOptions={{ headerShown: false }} />;
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SQLiteProvider databaseName="app.db" onInit={initDatabase}>
+        <BottomSheetModalProvider>
+          <Stack screenOptions={{ headerShown: false }} />
+        </BottomSheetModalProvider>
+      </SQLiteProvider>
+    </GestureHandlerRootView>
+  );
 }

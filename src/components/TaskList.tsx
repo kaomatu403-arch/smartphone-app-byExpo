@@ -1,74 +1,296 @@
-import React from "react";
-import { StyleSheet, Text, View, StyleProp, ViewStyle } from "react-native";
+import React, { useState, useEffect } from "react";
+import { StyleSheet, Text, View, StyleProp, ViewStyle, TouchableOpacity, Modal, Pressable, ScrollView, Image, Linking, Switch, Alert, TouchableWithoutFeedback } from "react-native";
+import { useSQLiteContext } from "expo-sqlite";
 import { Colors } from "@/constants/colors";
 import { Ionicons } from '@expo/vector-icons';
 
 export interface Task {
-  id: number;
+  id: number | string;
   name: string;
   due_date: string;
-  is_completed: boolean;
+  is_completed: number; // SQLite returns 0 or 1
   format?: string;
+  class_name?: string;
+  location_name?: string;
+  details?: string;
+  is_recurring?: number;
+  is_ghost?: boolean; // 未来の予定として動的に作られたタスク
 }
 
-// ダミーデータ（Propsが渡されなかった場合のデフォルト）
-const DUMMY_TASKS: Task[] = [
-  { id: 1, name: "情報倫理", due_date: "今日 23:59", is_completed: false },
-  { id: 2, name: "コミュA 小テスト", due_date: "今日 23:59", is_completed: false },
-  { id: 3, name: "データサイエンス基礎数理 課題", due_date: "昨日 23:59", is_completed: true },
-  { id: 4, name: "コンピュータ概論 レポート", due_date: "昨日 23:59", is_completed: true },
-];
+const formatFriendlyDate = (isoString: string) => {
+  const d = new Date(isoString);
+  const month = d.getMonth() + 1;
+  const date = d.getDate();
+  const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+  const day = dayNames[d.getDay()];
+  const hours = String(d.getHours()).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  return `${month}月${date}日(${day}) ${hours}:${minutes}`;
+};
 
 interface TaskListProps {
   tasks?: Task[];
-  title?: string; // 「今週の未完了課題」や「今月の未完了課題」などを外から渡せるように
+  title?: string;
+  summaryCount?: number; // 全体の未完了件数（週や月全体）
+  selectedDate?: Date;   // カレンダーで選択された日
   style?: StyleProp<ViewStyle>;
+  onToggleComplete?: (taskId: number, currentCompletedState: number) => void;
+  onTaskUpdated?: () => void;
+  roundedBottom?: boolean;
+  hideHeader?: boolean;
 }
 
-export default function TaskList({ tasks = DUMMY_TASKS, title = "今週の未完了課題", style }: TaskListProps) {
-  // 未完了の課題数をカウント
-  const uncompletedCount = tasks.filter((t) => !t.is_completed).length;
+export default function TaskList({ tasks = [], title = "今週の課題", summaryCount, selectedDate, style, onToggleComplete, onTaskUpdated, roundedBottom = false, hideHeader = false }: TaskListProps) {
+  const db = useSQLiteContext();
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [attachments, setAttachments] = useState<any[]>([]);
+  const [fullScreenImageUri, setFullScreenImageUri] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isActive = true;
+    const fetchAttachments = async () => {
+      if (!selectedTask) {
+        setAttachments([]);
+        return;
+      }
+      try {
+        const rows = await db.getAllAsync(
+          "SELECT * FROM task_attachments WHERE task_id = ?",
+          [selectedTask.id]
+        );
+        if (isActive) {
+          setAttachments(rows);
+        }
+      } catch (err) {
+        console.error("Failed to fetch attachments:", err);
+      }
+    };
+    fetchAttachments();
+    return () => { isActive = false; };
+  }, [selectedTask]);
+
+  const uncompletedCount = tasks.filter((t) => t.is_completed === 0).length;
+
+  const handleDeleteTask = (taskId: number | string) => {
+    Alert.alert(
+      "タスクの削除",
+      "このタスクを削除してもよろしいですか？",
+      [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除する",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await db.runAsync("DELETE FROM task_attachments WHERE task_id = ?", [taskId]);
+              await db.runAsync("DELETE FROM tasks WHERE id = ?", [taskId]);
+              setSelectedTask(null);
+              if (onTaskUpdated) onTaskUpdated();
+            } catch (err) {
+              console.error("Failed to delete task:", err);
+              Alert.alert("エラー", "タスクの削除に失敗しました。");
+            }
+          }
+        }
+      ]
+    );
+  };
 
   return (
-    <View style={[styles.container, style]}>
-      {/* 未完了課題カウント（サマリーバナー） */}
-      <View style={styles.summaryBanner}>
-        <Text style={styles.summaryLabel}>{title}</Text>
-        <View style={styles.summaryCount}>
-          <Text style={styles.summaryPrefix}>残り</Text>
-          <Text style={styles.summaryNumber}>{uncompletedCount}</Text>
-          <Text style={styles.summarySuffix}>つ</Text>
-        </View>
-      </View>
-
-      {/* タスクリスト */}
-      {tasks.map((task) => (
-        <View
-          key={task.id}
-          style={[
-            styles.taskCard,
-            task.is_completed && styles.taskCardCompleted,
-          ]}
-        >
-          <Text
-            style={[
-              styles.taskTitle,
-              task.is_completed && styles.taskTitleCompleted,
-            ]}
-          >
-            {task.name}
-          </Text>
-          <View style={styles.taskDeadline}>
-            <Ionicons name="time-outline" size={14} color={task.is_completed ? "#6c757d" : "#333"} style={{ marginRight: 4 }} />
-            <Text style={[styles.deadlineText, task.is_completed && styles.taskTextCompleted]}>
-              ~{task.due_date.replace('今日 ', '').replace('昨日 ', '')} {/* プレビュー用の簡易フォーマット */}
-            </Text>
+    <View style={[
+      styles.container, 
+      roundedBottom && styles.containerRoundedBottom,
+      style
+    ]}>
+      {!hideHeader && (
+        <View style={styles.summaryBanner}>
+          <Text style={styles.summaryLabel}>{title}</Text>
+          <View style={styles.summaryCount}>
+            <Text style={styles.summaryPrefix}>残り</Text>
+            <Text style={styles.summaryNumber}>{summaryCount !== undefined ? summaryCount : uncompletedCount}</Text>
+            <Text style={styles.summarySuffix}>つ</Text>
           </View>
         </View>
-      ))}
+      )}
+
+      {selectedDate && (
+        <View style={styles.dateHeader}>
+          <Text style={styles.dateHeaderText}>
+            {`${selectedDate.getMonth() + 1}月${selectedDate.getDate()}日 (${['日', '月', '火', '水', '木', '金', '土'][selectedDate.getDay()]})`}
+          </Text>
+        </View>
+      )}
+
+      {tasks.length === 0 ? (
+        <Text style={styles.emptyText}>課題はありません🎉</Text>
+      ) : (
+        tasks.map((task) => (
+          <View
+            key={task.id}
+            style={[
+              styles.taskCard,
+              task.location_color ? { borderLeftColor: task.location_color } : null,
+              task.is_completed === 1 && styles.taskCardCompleted,
+              task.is_ghost && styles.taskCardGhost,
+            ]}
+          >
+            <TouchableOpacity 
+              style={styles.checkboxContainer}
+              onPress={() => !task.is_ghost && onToggleComplete && onToggleComplete(task.id as number, task.is_completed)}
+            >
+              <Ionicons 
+                name={task.is_completed === 1 ? "checkmark-circle" : "ellipse-outline"} 
+                size={24} 
+                color={task.is_ghost ? "#ccc" : (task.is_completed === 1 ? Colors.purple.primary : "#ccc")} 
+              />
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.taskContent}
+              onPress={() => setSelectedTask(task)}
+            >
+              <Text
+                style={[
+                  styles.taskTitle,
+                  task.is_completed === 1 && styles.taskTitleCompleted,
+                  task.is_ghost && styles.taskNameGhost,
+                ]}
+              >
+                {task.name}
+              </Text>
+              {task.class_name && (
+                <Text style={styles.courseNameText}>{task.class_name}</Text>
+              )}
+              <View style={styles.taskDeadline}>
+                <Ionicons name="time-outline" size={14} color={task.is_completed === 1 ? "#6c757d" : "#333"} style={{ marginRight: 4 }} />
+                <Text style={[styles.deadlineText, task.is_completed === 1 && styles.taskTextCompleted]}>
+                  {formatFriendlyDate(task.due_date)}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        ))
+      )}
+
+      <Modal
+        visible={!!selectedTask}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setSelectedTask(null)}
+      >
+        <TouchableWithoutFeedback onPress={() => setSelectedTask(null)}>
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={styles.modalContent}>
+                {selectedTask && (
+                  <>
+                    <View style={styles.modalHeader}>
+                      <View style={{flexDirection: 'row', alignItems: 'center', flex: 1}}>
+                        <Text style={styles.modalTitle} numberOfLines={1}>{selectedTask.name}</Text>
+                        {selectedTask.is_ghost && (
+                          <View style={styles.ghostBadge}>
+                            <Text style={styles.ghostBadgeText}>予定</Text>
+                          </View>
+                        )}
+                      </View>
+                      <TouchableOpacity onPress={() => setSelectedTask(null)} style={styles.closeButton}>
+                        <Ionicons name="close" size={24} color="#666" />
+                      </TouchableOpacity>
+                    </View>
+
+                    {selectedTask.is_ghost && (
+                      <View style={styles.ghostWarningContainer}>
+                        <Ionicons name="information-circle-outline" size={20} color="#FFC107" />
+                        <Text style={styles.ghostWarningText}>これは未来の予定です。直近の課題を完了すると操作できるようになります。</Text>
+                      </View>
+                    )}
+
+                    <ScrollView style={styles.modalBody}>
+                      {selectedTask.class_name && (
+                        <View style={styles.detailRow}>
+                          <Ionicons name="book-outline" size={20} color={Colors.purple.primary} style={styles.detailIcon} />
+                          <View style={styles.detailTextContainer}>
+                            <Text style={styles.detailLabel}>授業</Text>
+                            <Text style={styles.detailValue}>{selectedTask.class_name}</Text>
+                          </View>
+                        </View>
+                      )}
+                      <View style={styles.detailRow}>
+                        <Ionicons name="time-outline" size={20} color={Colors.purple.primary} style={styles.detailIcon} />
+                        <View style={styles.detailTextContainer}>
+                          <Text style={styles.detailLabel}>締切</Text>
+                          <Text style={styles.detailValue}>{formatFriendlyDate(selectedTask.due_date)}</Text>
+                        </View>
+                      </View>
+                      
+                      {!selectedTask.is_ghost && (
+                        <View style={styles.modalActions}>
+                          <TouchableOpacity 
+                            style={styles.actionButton}
+                            onPress={() => {
+                              if (onToggleComplete) {
+                                onToggleComplete(selectedTask.id as number, selectedTask.is_completed);
+                                setSelectedTask(null);
+                              }
+                            }}
+                          >
+                            <Ionicons 
+                              name={selectedTask.is_completed === 1 ? "refresh-outline" : "checkmark-circle-outline"} 
+                              size={24} 
+                              color={Colors.purple.primary} 
+                            />
+                            <Text style={styles.actionButtonText}>
+                              {selectedTask.is_completed === 1 ? "未完了に戻す" : "完了にする"}
+                            </Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity 
+                            style={[styles.actionButton, styles.actionButtonDanger]}
+                            onPress={() => handleDeleteTask(selectedTask.id)}
+                          >
+                            <Ionicons name="trash-outline" size={24} color="#dc3545" />
+                            <Text style={[styles.actionButtonText, { color: "#dc3545" }]}>
+                              削除する
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </ScrollView>
+                  </>
+                )}
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
+
+      <Modal
+        visible={!!fullScreenImageUri}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setFullScreenImageUri(null)}
+      >
+        <Pressable 
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', alignItems: 'center' }} 
+          onPress={() => setFullScreenImageUri(null)}
+        >
+          {fullScreenImageUri && (
+            <Image
+              source={{ uri: fullScreenImageUri }}
+              style={{ width: '100%', height: '100%', resizeMode: 'contain' }}
+            />
+          )}
+          <TouchableOpacity 
+            style={{ position: 'absolute', top: 50, right: 20, padding: 10 }}
+            onPress={() => setFullScreenImageUri(null)}
+          >
+            <Ionicons name="close" size={32} color="#fff" />
+          </TouchableOpacity>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
+
 const styles = StyleSheet.create({
   container: {
     width: "100%",
@@ -77,7 +299,10 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 50,
     padding: 16,
   },
-  // --- 未完了課題バナー ---
+  containerRoundedBottom: {
+    borderBottomLeftRadius: 50,
+    borderBottomRightRadius: 50,
+  },
   summaryBanner: {
     backgroundColor: Colors.purple.primary,
     borderRadius: 16,
@@ -100,59 +325,92 @@ const styles = StyleSheet.create({
   },
   summaryCount: {
     flexDirection: "row",
-    alignItems: "baseline",
+    alignItems: 'baseline',
   },
   summaryPrefix: {
-    color: "#fff",
     fontSize: 16,
-    fontWeight: "500",
+    color: "#fff",
+    fontWeight: '500',
     marginRight: 4,
   },
   summaryNumber: {
-    color: "#fff",
     fontSize: 40,
-    fontWeight: "800",
+    fontWeight: '800',
+    color: "#fff",
   },
   summarySuffix: {
-    color: "#fff",
     fontSize: 16,
-    fontWeight: "500",
+    color: "#fff",
+    fontWeight: '500',
     marginLeft: 2,
   },
-
-  // --- タスクカード ---
+  dateHeader: {
+    marginTop: 16,
+    marginBottom: 8,
+    paddingHorizontal: 8,
+  },
+  dateHeaderText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: Colors.text.primary,
+  },
   taskCard: {
     backgroundColor: "#FFF9E6",
     borderRadius: 12,
     paddingVertical: 14,
     paddingHorizontal: 18,
     marginBottom: 10,
-    borderLeftWidth: 4,
+    borderLeftWidth: 8,
     borderLeftColor: "#F5D76E",
+    flexDirection: "row",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
   },
   taskCardCompleted: {
-    opacity: 0.5,
+    opacity: 0.6,
     backgroundColor: "#F8F9FA",
     borderLeftColor: "#CED4DA",
   },
+  taskCardGhost: {
+    opacity: 0.7,
+    backgroundColor: '#FAFAFA',
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderLeftColor: '#E0E0E0',
+  },
+  checkboxContainer: {
+    marginRight: 12,
+  },
+  taskContent: {
+    flex: 1,
+  },
   taskTitle: {
     fontSize: 16,
-    fontWeight: "700",
+    fontWeight: "600",
     color: "#333",
     marginBottom: 4,
   },
   taskTitleCompleted: {
-    color: "#6c757d",
+    color: "#aaa",
     textDecorationLine: "line-through",
+  },
+  taskNameGhost: {
+    color: '#666',
+  },
+  courseNameText: {
+    fontSize: 12,
+    color: Colors.purple.primary,
+    marginBottom: 6,
+    fontWeight: '600',
   },
   taskDeadline: {
     flexDirection: "row",
     alignItems: "center",
-  },
-  clockIcon: {
-    fontSize: 14,
-    marginRight: 4,
-    color: "#333",
   },
   deadlineText: {
     fontSize: 14,
@@ -161,4 +419,117 @@ const styles = StyleSheet.create({
   taskTextCompleted: {
     color: "#6c757d",
   },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    width: '85%',
+    maxHeight: '80%',
+    backgroundColor: Colors.background.white,
+    borderRadius: 16,
+    padding: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#333',
+  },
+  ghostBadge: {
+    backgroundColor: '#F0F0F0',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    marginLeft: 8,
+  },
+  ghostBadgeText: {
+    fontSize: 12,
+    color: '#666',
+    fontWeight: 'bold',
+  },
+  ghostWarningContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF9E6',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
+  },
+  ghostWarningText: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 13,
+    color: '#856404',
+    lineHeight: 18,
+  },
+  closeButton: {
+    padding: 4,
+  },
+  modalBody: {
+    marginTop: 4,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 16,
+  },
+  detailIcon: {
+    marginRight: 12,
+    marginTop: 2,
+  },
+  detailTextContainer: {
+    flex: 1,
+  },
+  detailLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginBottom: 4,
+  },
+  detailValue: {
+    fontSize: 16,
+    color: '#333',
+    fontWeight: '500',
+    lineHeight: 22,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    marginTop: 20,
+    gap: 12,
+  },
+  actionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: '#F8F9FA',
+  },
+  actionButtonDanger: {
+    backgroundColor: '#FFF5F5',
+  },
+  actionButtonText: {
+    marginLeft: 8,
+    fontWeight: 'bold',
+    color: Colors.purple.primary,
+  },
+  emptyText: {
+    textAlign: "center",
+    color: "#888",
+    fontSize: 16,
+    marginVertical: 20,
+  }
 });

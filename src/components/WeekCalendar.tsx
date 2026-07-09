@@ -60,6 +60,11 @@ interface WeekCalendarProps {
   taskCounts?: Record<number, number>;
 
   /**
+   * 現在選択されている日付
+   */
+  selectedDate?: Date;
+
+  /**
    * 表示週が変わったときのコールバック
    * 【後で差し替えポイント】
    * 週の日曜日の Date を渡す
@@ -77,6 +82,7 @@ interface WeekCalendarProps {
 // ---------------------------------------------------------
 export default function WeekCalendar({
   taskCounts = {},
+  selectedDate,
   onWeekChange,
   onDateSelect,
 }: WeekCalendarProps) {
@@ -176,6 +182,11 @@ export default function WeekCalendar({
           const day = date.getDate();
           const count = taskCounts[day] ?? 0;
           const isToday = date.getTime() === today.getTime();
+          const isSelected = selectedDate ? (
+            date.getFullYear() === selectedDate.getFullYear() &&
+            date.getMonth() === selectedDate.getMonth() &&
+            date.getDate() === selectedDate.getDate()
+          ) : false;
 
           return (
             <View key={index} style={styles.dateCell}>
@@ -184,15 +195,21 @@ export default function WeekCalendar({
                 activeOpacity={0.6}
                 onPress={() => onDateSelect?.(date)}
               >
-                {/* 日にち数字 */}
-                <Text
-                  style={[styles.dateText, isToday && styles.todayText]}
-                >
-                  {day}
-                </Text>
+                {/* 日にち数字の背景用のコンテナ */}
+                <View style={[styles.dateNumberContainer, isSelected && styles.selectedCell]}>
+                  <Text
+                    style={[
+                      styles.dateText, 
+                      isToday && !isSelected && styles.todayText,
+                      isSelected && styles.selectedText
+                    ]}
+                  >
+                    {day}
+                  </Text>
+                </View>
 
                 {/* タスク件数バッジ（件数 > 0 の場合のみ表示） */}
-                {count > 0 && (
+                {count > 0 ? (
                   <View
                     style={[
                       styles.badge,
@@ -208,6 +225,8 @@ export default function WeekCalendar({
                       {count}
                     </Text>
                   </View>
+                ) : (
+                  <View style={styles.badgePlaceholder} />
                 )}
               </TouchableOpacity>
             </View>
@@ -261,14 +280,26 @@ const styles = StyleSheet.create({
   },
   dateCell: {
     flex: 1,
-    minHeight: 72,
-  },
-  dateCellInner: {
-    flex: 1,
     alignItems: "center",
     justifyContent: "flex-start",
     paddingTop: 4,
     width: "100%",
+  },
+  dateCellInner: {
+    alignItems: "center",
+    justifyContent: "flex-start",
+    width: "100%",
+  },
+  dateNumberContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    overflow: "hidden", // 追加: はみ出さないようにして確実に丸にする
+  },
+  selectedCell: {
+    backgroundColor: Colors.purple.primary,
   },
   weekdayLabel: {
     fontSize: 14,
@@ -287,18 +318,26 @@ const styles = StyleSheet.create({
     color: Colors.text.primary,
   },
   todayText: {
-    color: Colors.calendar.sunday,
-    fontWeight: "800",
+    color: Colors.purple.primary,
+    fontWeight: "700",
+  },
+  selectedText: {
+    color: Colors.background.white,
+    fontWeight: "700",
   },
   // --- タスク件数バッジ ---
   badge: {
-    marginTop: 4,
-    minWidth: 22,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    marginTop: 2,
+    minWidth: 20,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
     borderRadius: 6,
     alignItems: "center",
     justifyContent: "center",
+  },
+  badgePlaceholder: {
+    marginTop: 2,
+    height: 16, // バッジと同じ高さを確保
   },
   badgeText: {
     fontSize: 11,

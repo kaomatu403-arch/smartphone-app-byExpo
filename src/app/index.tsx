@@ -1,119 +1,228 @@
-import MonthCalendar from "@/components/MonthCalendar";
+import BottomNavBar from "@/components/BottomNavBar";
 import TaskList from "@/components/TaskList";
 import Timetable from "@/components/Timetable";
-import WeekCalendar from "@/components/WeekCalendar";
-import BottomNavBar from "@/components/BottomNavBar";
 import { Colors } from "@/constants/colors";
-import * as SQLite from "expo-sqlite";
-import React, { useState } from "react";
+import { Ionicons } from "@expo/vector-icons";
+import { useFocusEffect, useRouter } from "expo-router";
+import { useSQLiteContext } from "expo-sqlite";
+import React, { useCallback, useState } from "react";
 import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
-// ---------------------------------------------------------
-// 【モックデータ】
-// 後で差し替えポイント：
-//   ここを DB や状態管理から取得した値に置き換えるだけでOK。
-//   形式: { 日にち: タスク件数 } の Record<number, number>
-// ---------------------------------------------------------
-const MOCK_TASK_COUNTS: Record<number, number> = {
-  1: 1,
-  3: 1,
-  10: 1,
-  17: 1,
-  19: 4, // 件数が多い → 濃いバッジ
-  20: 1,
-  24: 1,
-  31: 1,
+const GREETINGS = {
+  morning: [
+    "今日も一日がんばりましょう！",
+    "しっかり朝ごはんは食べましたか？エネルギー満タンでいきましょう！",
+    "1限から気合入れていきましょう！（もし寝坊してたら急いで！🏃‍♂️）",
+    "朝のうちに今日の課題をチェックしておくと、後で楽になりますよ！",
+    "今日も1日、単位のために生き抜きましょう！",
+    "清々しい朝ですね。今日の目標は決まりましたか？",
+    "早起きは三文の徳！今日も良いことがありますように。",
+    "今日も笑顔でスタートしましょう！",
+  ],
+  afternoon: [
+    "午後の授業もファイトです！",
+    "ご飯を食べて眠くなる時間帯…😪 コーヒーでも飲んで一息つきましょう。",
+    "今日のタスクは順調ですか？自分のペースで大丈夫ですよ！",
+    "あと少しで今日の授業も終わり！ラストスパートです！",
+    "お昼休みはリフレッシュできましたか？午後も頑張りましょう！",
+    "疲れたら軽くストレッチするのがおすすめです！",
+    "あと半日、気を抜かずにいきましょう！",
+    "夕方からの予定を楽しみに、午後も乗り切りましょう！",
+  ],
+  evening: [
+    "今日もお疲れ様でした！ゆっくり休んでくださいね🍵",
+    "残っている課題があれば、忘れないうちにサクッと終わらせちゃいましょう！",
+    "明日の時間割の確認をしておくと、朝が少しだけ楽になりますよ。",
+    "スマホの触りすぎには注意して、夜更かししないようにしてくださいね。",
+    "今日頑張った自分をたくさん褒めてあげてください！",
+    "夕食は何を食べましたか？しっかり栄養をとってくださいね。",
+    "リラックスタイム！お風呂にゆっくり浸かるのもおすすめです。",
+    "今日も1日、本当にお疲れ様でした！",
+  ],
+  night: [
+    "こんな時間まで起きているんですか！？ちゃんと寝てくださいね🛌",
+    "もしや課題に追われていますか…？応援しています！でも無理は禁物ですよ！",
+    "単位は落としても、スマホは落とさないように気を付けてくださいね。",
+    "夜の静寂な時間は集中できますが、明日に響かない程度に！",
+    "羊が一匹…羊が二匹…そろそろ寝る準備をしましょう。",
+    "遅くまで頑張りすぎないで！健康第一です。",
+    "深夜のテンションで変なメッセージを送らないように注意！",
+    "そろそろお休みの時間です。良い夢を！",
+  ]
 };
 
 export default function Index() {
-  const taskCounts = MOCK_TASK_COUNTS;
-  const [isEditMode, setIsEditMode] = useState(false);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [taskCounts, setTaskCounts] = useState<Record<number, number>>({});
   const [refreshKey, setRefreshKey] = useState(0);
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  
+  const [stats, setStats] = useState({ todayTotal: 0, todayCompleted: 0, weekTotal: 0, weekCompleted: 0 });
+  const [activeTab, setActiveTab] = useState<'today' | 'tomorrow'>('today');
+  const [todayTasks, setTodayTasks] = useState<any[]>([]);
+  const [tomorrowTasks, setTomorrowTasks] = useState<any[]>([]);
+
+  const [userName, setUserName] = useState('');
+  const [greetingMessage, setGreetingMessage] = useState('');
+
   const insets = useSafeAreaInsets();
+  const db = useSQLiteContext();
+  const router = useRouter();
 
-  // 開発用：テストデータ投入関数
-  const handleSeedData = async () => {
-    try {
-      const db = await SQLite.openDatabaseAsync("app.db");
-      
-      // 現在の学期があるか確認、なければ作成
-      let termId = 1;
-      const currentTerm: any = await db.getFirstAsync("SELECT id FROM terms WHERE is_current = 1");
-      if (currentTerm) {
-        termId = currentTerm.id;
-      } else {
-        const result = await db.runAsync(
-          "INSERT INTO terms (name, start_date, end_date, is_current) VALUES (?, ?, ?, ?)",
-          "テスト学期", "2024-04-01", "2024-08-31", 1
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
+      const fetchTasks = async () => {
+        try {
+          // 初回起動チェック (ユーザー名が未設定ならオンボーディングへ)
+          const userNameRow = await db.getFirstAsync<{value: string}>("SELECT value FROM app_settings WHERE key = 'user_name'", []);
+          if (!userNameRow || !userNameRow.value) {
+            if (isActive) {
+              router.replace('/onboarding');
+            }
+            return;
+          }
+          if (isActive) {
+            setUserName(userNameRow.value);
+            // 時間帯の判定
+            const currentHour = new Date().getHours();
+            let timeCategory: 'morning' | 'afternoon' | 'evening' | 'night';
+            let timeGreeting = '';
+            
+            if (currentHour >= 5 && currentHour < 12) {
+              timeCategory = 'morning';
+              timeGreeting = 'おはようございます！ ☀️';
+            } else if (currentHour >= 12 && currentHour < 17) {
+              timeCategory = 'afternoon';
+              timeGreeting = 'こんにちは！ 🌤️';
+            } else if (currentHour >= 17 && currentHour < 24) {
+              timeCategory = 'evening';
+              timeGreeting = 'こんばんは！ 🌙';
+            } else {
+              timeCategory = 'night';
+              timeGreeting = 'こんばんは！ 🦉'; // 深夜の挨拶
+            }
+
+            const messages = GREETINGS[timeCategory];
+            const randomMessage = messages[Math.floor(Math.random() * messages.length)];
+            setGreetingMessage(`${timeGreeting}\n\n${randomMessage}`);
+          }
+
+        const rows: any[] = await db.getAllAsync(
+          `SELECT t.id, t.name, t.due_date, t.is_completed, t.format, c.name as class_name, loc.name as location_name, loc.url as location_url, loc.color as location_color, t.details, t.is_recurring 
+           FROM tasks t 
+           LEFT JOIN classes c ON t.class_id = c.id 
+           LEFT JOIN task_locations loc ON t.location_id = loc.id
+           ORDER BY t.due_date ASC`, []
         );
-        termId = result.lastInsertRowId;
+        if (!isActive) return;
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(today.getDate() + 1);
+        const startOfWeek = new Date(today);
+        startOfWeek.setDate(today.getDate() - today.getDay());
+        const endOfWeek = new Date(startOfWeek);
+        endOfWeek.setDate(endOfWeek.getDate() + 6);
+        endOfWeek.setHours(23, 59, 59, 999);
+
+        let tTotal = 0, tComp = 0, wTotal = 0, wComp = 0;
+        const tTasks: any[] = [];
+        const tomTasks: any[] = [];
+        const counts: Record<number, number> = {};
+
+        for (const t of rows) {
+          const d = new Date(t.due_date);
+          
+          if (t.is_completed === 0) {
+            const day = d.getDate();
+            counts[day] = (counts[day] || 0) + 1;
+          }
+
+          if (d >= today && d < tomorrow) {
+            tTotal++;
+            if (t.is_completed === 1) tComp++;
+            else tTasks.push(t);
+          } else if (d >= tomorrow && d < new Date(tomorrow.getTime() + 24*60*60*1000)) {
+            if (t.is_completed === 0) tomTasks.push(t);
+          }
+
+          if (d >= startOfWeek && d <= endOfWeek) {
+            wTotal++;
+            if (t.is_completed === 1) wComp++;
+          }
+        }
+        
+        setStats({ todayTotal: tTotal, todayCompleted: tComp, weekTotal: wTotal, weekCompleted: wComp });
+        setTodayTasks(tTasks);
+        setTomorrowTasks(tomTasks);
+        setTaskCounts(counts);
+        setTasks(rows.filter(t => t.is_completed === 0));
+
+      } catch (err) {
+        console.error("Failed to fetch tasks:", err);
       }
+    };
+    fetchTasks();
+    return () => { isActive = false; };
+  }, [refreshKey])
+  );
 
-      // 授業データ (0:月, 1:火, 2:水, 3:木, 4:金)
-      const seedCourses = [
-        { name: 'コンピュータリテラシ', day_of_week: 0, period: 1 },
-        { name: 'キャリアデザイン', day_of_week: 0, period: 2 },
-        { name: '情報社会及び情報倫理', day_of_week: 0, period: 3 },
-        { name: 'CEC', day_of_week: 1, period: 2 },
-        { name: '線形代数１', day_of_week: 1, period: 3 },
-        { name: 'CEA', day_of_week: 1, period: 4 },
-        { name: 'コンピュータ概論', day_of_week: 2, period: 1 },
-        { name: '情報数学１', day_of_week: 2, period: 2 },
-        { name: 'プログラミング及び演習１', day_of_week: 3, period: 1 },
-        { name: 'データサイエンス基礎数理', day_of_week: 3, period: 3 },
-        { name: '日本国憲法', day_of_week: 4, period: 1 },
-        { name: '論理回路', day_of_week: 4, period: 2 },
-        { name: '中国語A', day_of_week: 4, period: 3 },
-        { name: '健康・スポーツ化学実習１', day_of_week: 4, period: 4 },
-      ];
+  // タスクの完了切り替えとクローン生成ロジック
+  const handleToggleComplete = async (taskId: number, currentCompletedState: number) => {
+    try {
+      const newCompletedState = currentCompletedState === 1 ? 0 : 1;
+      
+      // 1. 現在のタスクを更新
+      await db.runAsync(
+        "UPDATE tasks SET is_completed = ?, updated_at = ? WHERE id = ?",
+        [newCompletedState, new Date().toISOString(), taskId]
+      );
 
-      for (const course of seedCourses) {
-        const existing: any = await db.getFirstAsync(
-          "SELECT id FROM classes WHERE term_id = ? AND day_of_week = ? AND period = ?",
-          termId, course.day_of_week, course.period
+      // 2. 完了状態になり、かつ繰り返しタスクの場合は次回タスクをクローン
+      if (newCompletedState === 1) {
+        const task: any = await db.getFirstAsync(
+          "SELECT * FROM tasks WHERE id = ?",
+          [taskId]
         );
 
-        if (!existing) {
+        if (task && task.is_recurring === 1) {
+          // 次回の期限を計算 (+7日)
+          const nextDueDate = new Date(task.due_date);
+          nextDueDate.setDate(nextDueDate.getDate() + 7);
+          
+          const createdAt = new Date().toISOString();
+          
+          const query = `INSERT INTO tasks (name, class_id, location_id, format, created_at, due_date, updated_at, details, is_completed, is_recurring)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`;
+               
           await db.runAsync(
-            "INSERT INTO classes (term_id, name, day_of_week, period) VALUES (?, ?, ?, ?)",
-            termId, course.name, course.day_of_week, course.period
-          );
-        } else {
-          await db.runAsync(
-            "UPDATE classes SET name = ? WHERE id = ?",
-            course.name, existing.id
+            query,
+            [
+              String(task.name),
+              task.class_id != null ? Number(task.class_id) : null,
+              task.location_id != null ? Number(task.location_id) : null,
+              String(task.format),
+              String(createdAt),
+              String(nextDueDate.toISOString()),
+              String(createdAt),
+              task.details != null ? String(task.details) : '',
+              Number(task.is_recurring)
+            ]
           );
         }
       }
       
-      Alert.alert("完了", "テストデータを投入しました！");
+      // UIの更新
       setRefreshKey(prev => prev + 1);
     } catch (error) {
-      console.error(error);
-      Alert.alert("エラー", "データの投入に失敗しました。");
+      console.error("Failed to toggle task completion:", error);
+      Alert.alert("エラー", "タスクの更新に失敗しました。");
     }
   };
 
-  // 開発用：DB初期化（リセット）関数
-  const handleResetDb = async () => {
-    try {
-      const db = await SQLite.openDatabaseAsync("app.db");
-      // 各テーブルのデータを全削除（SQLiteの外部キー制約設定によっては、順番やCASCADEに注意）
-      await db.execAsync(`
-        DELETE FROM task_reminders;
-        DELETE FROM tasks;
-        DELETE FROM task_locations;
-        DELETE FROM classes;
-        DELETE FROM terms;
-      `);
-      Alert.alert("完了", "DBのデータを全て初期化しました！");
-      setRefreshKey(prev => prev + 1);
-    } catch (error) {
-      console.error(error);
-      Alert.alert("エラー", "DBの初期化に失敗しました。");
-    }
-  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
@@ -122,49 +231,98 @@ export default function Index() {
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
         >
-          <View style={styles.paddedSection}>
-            {/* モード切り替えボタン（確認用） */}
-            <View style={styles.headerControls}>
-              <TouchableOpacity 
-                style={[styles.toggleButton, { marginRight: 8, backgroundColor: Colors.yellow.superdark }]} 
-                onPress={handleResetDb}
-              >
-                <Text style={[styles.toggleButtonText, { color: Colors.background.white }]}>
-                  DBリセット
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.toggleButton, { marginRight: 8, backgroundColor: Colors.yellow.superdark }]} 
-                onPress={handleSeedData}
-              >
-                <Text style={[styles.toggleButtonText, { color: Colors.background.white }]}>
-                  DBにデータを投入
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.toggleButton} 
-                onPress={() => setIsEditMode(!isEditMode)}>
-                <Text style={styles.toggleButtonText}>
-                  {isEditMode ? "時間割編集を終了" : "時間割を追加する"}
-                </Text>
-              </TouchableOpacity>
+          <View style={[styles.paddedSection, { zIndex: 1, elevation: 1 }]}>
+            
+            {/* 挨拶メッセージ */}
+            <View style={styles.greetingContainer}>
+              <Text style={styles.greetingName}>{userName} さん</Text>
+              <Text style={styles.greetingMessage}>{greetingMessage}</Text>
             </View>
 
-            <MonthCalendar taskCounts={taskCounts} />
-            <WeekCalendar taskCounts={taskCounts} />
-            {/* 時間割（枠のみ） */}
-            <Timetable isEditMode={isEditMode} refreshKey={refreshKey} />
+            {/* ダッシュボード (達成度) */}
+            <View style={styles.dashboardCard}>
+              <View style={styles.dashboardRow}>
+                <View style={styles.dashboardItem}>
+                  <Text style={styles.dashboardLabel}>今日の課題</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Text style={styles.dashboardValue}>{stats.todayCompleted} / {stats.todayTotal}</Text>
+                    {stats.todayTotal > 0 && stats.todayCompleted < stats.todayTotal && (
+                      <Ionicons name="alert-circle" size={16} color="#E74C3C" style={{ marginLeft: 4 }} />
+                    )}
+                    {stats.todayTotal > 0 && stats.todayCompleted === stats.todayTotal && (
+                      <Ionicons name="star" size={16} color={Colors.yellow.dark} style={{ marginLeft: 4 }} />
+                    )}
+                  </View>
+                </View>
+                <View style={styles.dashboardDivider} />
+                <View style={styles.dashboardItem}>
+                  <Text style={styles.dashboardLabel}>今週の課題</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Text style={styles.dashboardValue}>{stats.weekCompleted} / {stats.weekTotal}</Text>
+                    {stats.weekTotal > 0 && stats.weekCompleted < stats.weekTotal && (
+                      <Ionicons name="alert-circle" size={16} color="#E74C3C" style={{ marginLeft: 4 }} />
+                    )}
+                    {stats.weekTotal > 0 && stats.weekCompleted === stats.weekTotal && (
+                      <Ionicons name="star" size={16} color={Colors.yellow.dark} style={{ marginLeft: 4 }} />
+                    )}
+                  </View>
+                </View>
+              </View>
+            </View>
 
-            {/* 週表示カレンダー */}
-            <WeekCalendar taskCounts={taskCounts} />
+            {/* 今日の課題・明日の課題 タブ切り替えとリスト */}
+            <View style={styles.dashboardListCard}>
+              <View style={styles.tabContainer}>
+                <TouchableOpacity 
+                  style={[styles.tabButton, activeTab === 'today' && styles.tabButtonActive]}
+                  onPress={() => setActiveTab('today')}
+                >
+                  <Text style={[styles.tabText, activeTab === 'today' && styles.tabTextActive]}>今日の課題</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[styles.tabButton, activeTab === 'tomorrow' && styles.tabButtonActive]}
+                  onPress={() => setActiveTab('tomorrow')}
+                >
+                  <Text style={[styles.tabText, activeTab === 'tomorrow' && styles.tabTextActive]}>明日の課題</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.dashboardListContent}>
+                {activeTab === 'today' ? (
+                  <TaskList 
+                    tasks={todayTasks} 
+                    hideHeader={true}
+                    onToggleComplete={handleToggleComplete}
+                    onTaskUpdated={() => setRefreshKey(prev => prev + 1)}
+                    style={{ backgroundColor: 'transparent', paddingHorizontal: 0, paddingBottom: 0 }}
+                  />
+                ) : (
+                  <TaskList 
+                    tasks={tomorrowTasks} 
+                    hideHeader={true}
+                    onToggleComplete={handleToggleComplete}
+                    onTaskUpdated={() => setRefreshKey(prev => prev + 1)}
+                    style={{ backgroundColor: 'transparent', paddingHorizontal: 0, paddingBottom: 0 }}
+                  />
+                )}
+              </View>
+            </View>
 
-            {/* 月表示カレンダー */}
-            <MonthCalendar taskCounts={taskCounts} />
+            {/* 新しいタスク一覧表示への遷移ボタン */}
+            <TouchableOpacity 
+              style={styles.expandButton}
+              onPress={() => router.push('/tasks-overview')}
+            >
+              <Text style={styles.expandButtonText}>タスクの一覧表示へ</Text>
+              <Ionicons name="chevron-forward" size={20} color={Colors.purple.primary} />
+            </TouchableOpacity>
+
+
           </View>
 
-          <TaskList style={{ paddingBottom: 100 + insets.bottom }} />
-
+          {/* ここだけにしかタスクリストはだめ */}
+          
         </ScrollView>
-        <BottomNavBar />
+        <BottomNavBar onTaskCreated={() => setRefreshKey(prev => prev + 1)} />
       </View>
 
     </SafeAreaView>
@@ -185,6 +343,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
+    flexGrow: 1,
+    paddingBottom: 120, // コンテンツが少ない時でも下部の余白を確保（ナビゲーションバーなど）
     gap: 16, // コンポーネント同士の余白だけを残す
   },
   paddedSection: {
@@ -206,4 +366,141 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontSize: 14,
   },
+  // --- ダッシュボード用スタイル ---
+  dashboardCard: {
+    backgroundColor: Colors.purple.primary,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderRadius: 16,
+    marginBottom: 8,
+  },
+  greetingContainer: {
+    marginBottom: 20,
+    paddingHorizontal: 4,
+  },
+  greetingName: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: Colors.text.white,
+    marginBottom: 6,
+  },
+  greetingMessage: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: Colors.text.white,
+    lineHeight: 26,
+  },
+  dashboardRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  dashboardItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  dashboardLabel: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  dashboardValue: {
+    color: '#FFF',
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  dashboardDivider: {
+    width: 1,
+    height: '80%',
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    marginHorizontal: 16,
+  },
+  dashboardListCard: {
+    backgroundColor: '#FFF',
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+    marginBottom: 8,
+  },
+  tabContainer: {
+    flexDirection: 'row',
+    marginBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EEE',
+  },
+  tabButton: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  tabButtonActive: {
+    borderBottomWidth: 2,
+    borderBottomColor: Colors.purple.primary,
+  },
+  tabText: {
+    fontSize: 14,
+    color: '#999',
+    fontWeight: '600',
+  },
+  tabTextActive: {
+    color: Colors.purple.primary,
+  },
+  dashboardListContent: {
+    minHeight: 60,
+  },
+  dashboardTaskItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5F5F5',
+  },
+  dashboardTaskName: {
+    flex: 1,
+    fontSize: 15,
+    color: '#333',
+    fontWeight: '500',
+  },
+  dashboardTaskClass: {
+    fontSize: 12,
+    color: Colors.purple.primary,
+    backgroundColor: 'rgba(108, 92, 231, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginLeft: 8,
+    overflow: 'hidden',
+  },
+  dashboardEmptyText: {
+    textAlign: 'center',
+    color: '#666',
+    marginTop: 16,
+    fontSize: 14,
+  },
+  // --- 新しいタスク表示用スタイル ---
+  expandButton: {
+    backgroundColor: '#FFF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  expandButtonText: {
+    color: Colors.purple.primary,
+    fontSize: 16,
+    fontWeight: '700',
+    marginRight: 8,
+  }
 });
